@@ -221,7 +221,7 @@ def join_sections(name, *sections, **kwargs):
             
     return section
         
-def grid_section(grid, lons, lats, topology="latlon", curve="great circle"):
+def grid_section(grid, lons, lats, topology="latlon", curve="great circle", algorithm="new1"):
     """
     Compute composite section along model `grid` velocity faces that approximates geodesic paths
     between consecutive points defined by (lons, lats).
@@ -260,7 +260,8 @@ def grid_section(grid, lons, lats, topology="latlon", curve="great circle"):
         check_symmetric(grid),
         boundary={ax:grid.axes[ax]._boundary for ax in grid.axes},
         topology=topology,
-        curve=curve
+        curve=curve,
+        algorithm=algorithm
     )
 
 def create_section_composite(
@@ -271,7 +272,8 @@ def create_section_composite(
     symmetric,
     boundary={"X":"periodic", "Y":"extend"},
     topology="latlon",
-    curve="great circle"
+    curve="great circle",
+    algorithm="new1",
     ):
     """
     Compute composite section along velocity faces, as defined by coordinates of vorticity points (gridlon, gridlat),
@@ -329,7 +331,8 @@ def create_section_composite(
             symmetric,
             boundary=boundary,
             topology=topology,
-            curve=curve
+            curve=curve,
+            algorithm=algorithm
         )
 
         i_c = np.concatenate([i_c, i_c_seg[:-1]], axis=0)
@@ -344,7 +347,7 @@ def create_section_composite(
 
     return i_c.astype(np.int64), j_c.astype(np.int64), lons_c, lats_c
 
-def create_section(gridlon, gridlat, lonstart, latstart, lonend, latend, symmetric, boundary={"X":"periodic", "Y":"extend"}, topology="latlon", curve="great circle"):
+def create_section(gridlon, gridlat, lonstart, latstart, lonend, latend, symmetric, boundary={"X":"periodic", "Y":"extend"}, topology="latlon", curve="great circle", algorithm="new1"):
     """
     Compute a section segment along velocity faces, as defined by coordinates of vorticity points (gridlon, gridlat),
     that most closely approximates the geodesic path between points (lonstart, latstart) and (lonend, latend).
@@ -399,7 +402,8 @@ def create_section(gridlon, gridlat, lonstart, latstart, lonend, latend, symmetr
         gridlat,
         boundary=boundary,
         topology=topology,
-        curve=curve
+        curve=curve,
+        algorithm=algorithm
     )
     return (
         i_c_seg,
@@ -408,7 +412,7 @@ def create_section(gridlon, gridlat, lonstart, latstart, lonend, latend, symmetr
         lats_c_seg
     )
 
-def infer_grid_path_from_geo(lonstart, latstart, lonend, latend, gridlon, gridlat, boundary={"X":"periodic", "Y":"extend"}, topology="latlon", curve="great circle"):
+def infer_grid_path_from_geo(lonstart, latstart, lonend, latend, gridlon, gridlat, boundary={"X":"periodic", "Y":"extend"}, topology="latlon", curve="great circle", algorithm="new1"):
     """
     Find the grid indices (and coordinates) of vorticity points that most closely approximates
     the geodesic path between points (lonstart, latstart) and (lonend, latend).
@@ -469,13 +473,14 @@ def infer_grid_path_from_geo(lonstart, latstart, lonend, latend, gridlon, gridla
         gridlat,
         boundary=boundary,
         topology=topology,
-        curve=curve
+        curve=curve,
+        algorithm=algorithm
     )
 
     return i_c_seg, j_c_seg, lons_c_seg, lats_c_seg
 
 
-def infer_grid_path(i1, j1, i2, j2, gridlon, gridlat, boundary={"X":"periodic", "Y":"extend"}, topology="latlon", curve="great circle"):
+def infer_grid_path(i1, j1, i2, j2, gridlon, gridlat, boundary={"X":"periodic", "Y":"extend"}, topology="latlon", curve="great circle", algorithm="new1"):
     """
     Find the grid indices (and coordinates) of vorticity points that most closely approximate
     the geodesic path between points (gridlon[j1,i1], gridlat[j1,i1]) and
@@ -560,6 +565,7 @@ def infer_grid_path(i1, j1, i2, j2, gridlon, gridlat, boundary={"X":"periodic", 
     # Third, go to the valid neighbor that is closest to the desired curve between the
     # start and end points.
     j_prev, i_prev = j,i
+    d_list = np.empty(4)
     while (i != i2) or (j != j2):
         # safety precaution: exit after taking enough steps to have crossed the entire model grid
         if ct > (nx+ny+1):
@@ -587,7 +593,9 @@ def infer_grid_path(i1, j1, i2, j2, gridlon, gridlat, boundary={"X":"periodic", 
             if j!=ny-1:
                 up = (j+1, i)
             else:
-                up = (j-1, nx-1-i)
+                up = (j-1, nx-1-i)  # original from Sectionate (removed modulo nx)
+                # up = (2*nj-j, ni-i)  # Geoff: taken from MOM5 manual, 1-index based
+                # up = (j-1, (nx-2-i)%nx)  # Geoff: taken from MOM5 manual, now 0-index based. Same as tripolar-Fpivot!
         elif topology=="tripolar-Fpivot":
             if j!=ny-1:
                 up = (j+1, i)
@@ -605,54 +613,105 @@ def infer_grid_path(i1, j1, i2, j2, gridlon, gridlat, boundary={"X":"periodic", 
         
         neighbors = [right, left, down, up]
 
-        j_next, i_next = None, None
-        min_d_to_curve = np.inf
-        d_list = []
-        for (_j, _i) in neighbors:
-            d = dist_to_end(
-                gridlon[_j,_i],
-                gridlat[_j,_i],
-                lon2,
-                lat2
-            )
-            d_list.append(d)
-            if d < d_to_end_current:
-                if d==0.: # We're done!
-                    j_next, i_next = _j, _i
-                    min_d_to_curve = 0.
-                    break
-                else:
-                    # Instead of simply moving to the point that gets us closest to the target,
-                    # a more robust approach is to pick, among the points that do get us closer,
-                    # the one that most closely follows the desired curve between the start and
-                    # end points of the section. We measure the closeness to the desired curve 
-                    # by considering the curve in both directions, so that the shortest path is
-                    # unique and insensitive to which direction the section is traveled.
-                    d_to_curve = (
-                          dist_to_curve(lon1, lat1, lon2, lat2, gridlon[_j,_i], gridlat[_j,_i])
-                        + dist_to_curve(lon2, lat2, lon1, lat1, gridlon[_j,_i], gridlat[_j,_i])
-                        )
-                    if d_to_curve < min_d_to_curve:
+        if algorithm == "original":
+            # Original Sectionate algorithm: 
+            # Among those neighbors that are closer to the end, choose the one that is closest to the desired curve.
+            # If none of the neighbors get closer to the end, OR if the chosen point is the previous point, THEN
+            # choose the neighbor, excluding the previous point, that is closest to the end.
+            j_next, i_next = None, None
+            min_d_to_curve = np.inf
+            d_list = []
+            for (_j, _i) in neighbors:
+                d = dist_to_end(
+                    gridlon[_j,_i],
+                    gridlat[_j,_i],
+                    lon2,
+                    lat2
+                )
+                d_list.append(d)
+                if d < d_to_end_current:
+                    if d==0.: # We're done!
                         j_next, i_next = _j, _i
-                        min_d_to_curve = d_to_curve
-        
-        # There can be some strange edge cases in which none of the neighboring points
-        # actually get us closer to the target (e.g. when closing folds in the grid).
-        # In these cases, simply pick the adjacent point that gets us closest, as long as
-        # it was not our previous point (to avoid endless loops). This algorithm should be
-        # guaranteed to always get us to the target point.
-        if (min_d_to_curve == np.inf) or (j_next, i_next) == (j_prev, i_prev):
-            if (j_prev, i_prev) in neighbors:
-                idx = neighbors.index((j_prev, i_prev))
-                del neighbors[idx]
-                del d_list[idx]
+                        min_d_to_curve = 0.
+                        break
+                    else:
+                        # Instead of simply moving to the point that gets us closest to the target,
+                        # a more robust approach is to pick, among the points that do get us closer,
+                        # the one that most closely follows the desired curve between the start and
+                        # end points of the section. We measure the closeness to the desired curve 
+                        # by considering the curve in both directions, so that the shortest path is
+                        # unique and insensitive to which direction the section is traveled.
+                        d_to_curve = (
+                              dist_to_curve(lon1, lat1, lon2, lat2, gridlon[_j,_i], gridlat[_j,_i])
+                            + dist_to_curve(lon2, lat2, lon1, lat1, gridlon[_j,_i], gridlat[_j,_i])
+                            )
+                        if d_to_curve < min_d_to_curve:
+                            j_next, i_next = _j, _i
+                            min_d_to_curve = d_to_curve
             
-            (j_next, i_next) = neighbors[np.argmin(d_list)]
+            # There can be some strange edge cases in which none of the neighboring points
+            # actually get us closer to the target (e.g. when closing folds in the grid).
+            # In these cases, simply pick the adjacent point that gets us closest, as long as
+            # it was not our previous point (to avoid endless loops). This algorithm should be
+            # guaranteed to always get us to the target point.
+            if (min_d_to_curve == np.inf) or (j_next, i_next) == (j_prev, i_prev):
+                if (j_prev, i_prev) in neighbors:
+                    idx = neighbors.index((j_prev, i_prev))
+                    del neighbors[idx]
+                    del d_list[idx]
+                
+                (j_next, i_next) = neighbors[np.argmin(d_list)]
 
-        j_prev, i_prev = j,i
+            j_prev, i_prev = j,i
+            
+            j = j_next
+            i = i_next
         
-        j = j_next
-        i = i_next
+        elif algorithm == "new1":
+            # Among those points that are closer to the end and are not the previous point, pick the one that is closest to the desired curve.
+            # print(i,j)
+            for n, (_j, _i) in enumerate(neighbors):
+                if (_j, _i) == (j_prev, i_prev):
+                    d_list[n] = np.inf
+                else:
+                    if dist_to_end(gridlon[_j,_i], gridlat[_j,_i], lon2, lat2) < d_to_end_current:
+                        d_list[n] = (
+                            dist_to_curve(lon1, lat1, lon2, lat2, gridlon[_j,_i], gridlat[_j,_i])
+                          + dist_to_curve(lon2, lat2, lon1, lat1, gridlon[_j,_i], gridlat[_j,_i])
+                        )
+                    else:
+                        d_list[n] = np.inf
+            j_prev, i_prev = j,i
+            idx = np.argmin(d_list)
+            if d_list[idx] == np.inf:
+                raise RuntimeError(f"At (j,i) = {(i,j)}; all neighbors = {neighbors} are further from the end. Is something wrong with your grid?")
+            (j, i) = neighbors[idx]
+        elif algorithm == "new2":
+            # On the first step, exclude points that go further away from the endpoint.
+            # On subsequent steps, exclude the point that goes backwards to the previous step.
+            # On all steps, pick the point that is closest to the desired curve, among remaining points.
+            # Depending on the grid and topology and section, this can lead to infinite loops.
+            # print(j,i)
+            if len(i_c_seg) == 1:
+                for n, (_j, _i) in enumerate(neighbors):
+                    if dist_to_end(gridlon[_j,_i], gridlat[_j,_i], lon2, lat2) > d_to_end_current:
+                        d_list[n] = np.inf
+                    else:
+                        d_list[n] = (
+                            dist_to_curve(lon1, lat1, lon2, lat2, gridlon[_j,_i], gridlat[_j,_i])
+                          + dist_to_curve(lon2, lat2, lon1, lat1, gridlon[_j,_i], gridlat[_j,_i])
+                        )
+            else:
+                for n, (_j, _i) in enumerate(neighbors):
+                    if (_j, _i) == (j_prev, i_prev):
+                        d_list[n] = np.inf
+                    else:
+                        d_list[n] = (
+                            dist_to_curve(lon1, lat1, lon2, lat2, gridlon[_j,_i], gridlat[_j,_i])
+                          + dist_to_curve(lon2, lat2, lon1, lat1, gridlon[_j,_i], gridlat[_j,_i])
+                        )
+            j_prev, i_prev = j,i
+            (j, i) = neighbors[np.argmin(d_list)]
 
         i_c_seg.append(i)
         j_c_seg.append(j)
@@ -810,8 +869,13 @@ def spherical_angle(lonA, latA, lonB, latB, lonC, latC):
     a = distance_on_unit_sphere(lonB, latB, lonC, latC, R=1.)
     b = distance_on_unit_sphere(lonC, latC, lonA, latA, R=1.)
     c = distance_on_unit_sphere(lonA, latA, lonB, latB, R=1.)
+
+    if b == 0 or c == 0:
+        # b == 0 means A = C.  c == 0 means A = B. Either way, declare the angle between AB and AC as zero.
+        return 0.
+    else:
+        return np.arccos(np.clip((np.cos(a) - np.cos(b)*np.cos(c))/(np.sin(b)*np.sin(c)), -1., 1.))
         
-    return np.arccos(np.clip((np.cos(a) - np.cos(b)*np.cos(c))/(np.sin(b)*np.sin(c)), -1., 1.))
 
 def _latitude_abs_difference(lonA, latA, lonB, latB, lonC, latC):
     # Calculate the absolute value of the difference between latA and latC
