@@ -668,7 +668,8 @@ def infer_grid_path(i1, j1, i2, j2, gridlon, gridlat, boundary={"X":"periodic", 
             i = i_next
         
         elif algorithm == "new1":
-            # Among those points that are closer to the end and are not the previous point, pick the one that is closest to the desired curve.
+            # Among those neighbors that are closer to the end and are not the previous point, pick the one that is closest to the desired curve.
+            # If the only neighbors are further from the end, or are the previous point, then throw an error.
             # print(i,j)
             for n, (_j, _i) in enumerate(neighbors):
                 if (_j, _i) == (j_prev, i_prev):
@@ -684,7 +685,7 @@ def infer_grid_path(i1, j1, i2, j2, gridlon, gridlat, boundary={"X":"periodic", 
             j_prev, i_prev = j,i
             idx = np.argmin(d_list)
             if d_list[idx] == np.inf:
-                raise RuntimeError(f"At (j,i) = {(i,j)}; all neighbors = {neighbors} are further from the end at (j,i) = {(j2, i2)}.")
+                raise RuntimeError(f"At (j,i) = {(i,j)}; all neighbors = {neighbors}, excluding the previous point = {(j_prev, i_prev)}, are further from the end at (j,i) = {(j2, i2)}.")
             (j, i) = neighbors[idx]
         elif algorithm == "new2":
             # On the first step, exclude points that go further away from the endpoint.
